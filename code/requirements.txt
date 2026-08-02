@@ -3,6 +3,7 @@
 
 langchain>=1.0.0
 langchain-openai>=1.0.0
+langchain-ollama          # 本地免 Key 模型（Ollama）
 langchain-community
 langchain-chroma
 langchain-text-splitters
