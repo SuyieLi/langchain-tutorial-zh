@@ -3,10 +3,16 @@
 02 · 模型调用基础 —— 消息、四种调用方式、结构化输出、嵌入
 对应笔记: 02-模型调用基础.md
 """
+import os
+
 from langchain.chat_models import init_chat_model
 from langchain.messages import SystemMessage, HumanMessage
 from pydantic import BaseModel, Field
+from dotenv import load_dotenv
 
+
+# 自动读取项目根目录的 .env（缺失也不会报错）
+load_dotenv()
 
 def section(title: str):
     print(f"\n{'=' * 60}\n{title}\n{'=' * 60}")
@@ -15,7 +21,13 @@ def section(title: str):
 def part1_messages():
     """消息结构: system / human 消息"""
     section("Part 1 · 消息结构")
-    model = init_chat_model("gpt-4o-mini", model_provider="openai")
+
+    model = init_chat_model(
+        model_name,
+        model_provider=model_provider,
+        api_key=api_key,
+        base_url=base_url,
+    )
 
     messages = [
         SystemMessage("你是一个资深的Python导师，回答要简洁、带代码示例。"),
@@ -29,7 +41,12 @@ def part1_messages():
 def part2_invoke_stream_batch():
     """四种调用方式"""
     section("Part 2 · invoke / stream / batch")
-    model = init_chat_model("gpt-4o-mini", model_provider="openai")
+    model = init_chat_model(
+        model_name,
+        model_provider=model_provider,
+        api_key=api_key,
+        base_url=base_url,
+    )
 
     # stream: 流式输出（打字机效果）
     print("--- stream 流式 ---")
@@ -47,7 +64,12 @@ def part2_invoke_stream_batch():
 def part3_structured():
     """结构化输出"""
     section("Part 3 · 结构化输出")
-    model = init_chat_model("gpt-4o-mini", model_provider="openai")
+    model = init_chat_model(
+        model_name,
+        model_provider=model_provider,
+        api_key=api_key,
+        base_url=base_url,
+    )
 
     class MovieReview(BaseModel):
         title: str = Field(description="电影名")
@@ -55,7 +77,12 @@ def part3_structured():
         summary: str = Field(description="一句话剧情简介")
         tags: list[str] = Field(description="标签列表，2-5 个")
 
-    review = model.with_structured_output(MovieReview).invoke("评价电影《星际穿越》")
+    # review = model.with_structured_output(MovieReview).invoke("评价电影《星际穿越》")
+    review = model.with_structured_output(
+        MovieReview,
+        method="function_calling"  # 强制走function call，不使用json_schema
+    ).invoke("评价电影《星际穿越》")
+
     print(f"电影: {review.title}")
     print(f"评分: {review.rating}")
     print(f"简介: {review.summary}")
@@ -84,4 +111,10 @@ def main():
 
 
 if __name__ == "__main__":
+    # 从环境变量读取配置，带默认值（默认走DeepSeek）
+    api_key = os.getenv("API_KEY", "")
+    model_name = os.getenv("MODEL_NAME", "deepseek-chat")
+    model_provider = os.getenv("MODEL_PROVIDER", "openai")
+    base_url = os.getenv("BASE_URL", "https://api.deepseek.com/v1")
+
     main()
