@@ -3,14 +3,28 @@
 10 · LangGraph 工作流 —— 节点/边/状态、条件边、检查点、人机协同
 对应笔记: 10-LangGraph工作流编排.md
 """
+import os
 from typing import TypedDict
 
+from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import StateGraph, START, END
 
-model = init_chat_model("gpt-4o-mini", model_provider="openai")
+# 自动读取项目根目录的 .env（默认走 DeepSeek）
+load_dotenv()
+api_key = os.getenv("API_KEY", "")
+model_name = os.getenv("MODEL_NAME", "deepseek-chat")
+model_provider = os.getenv("MODEL_PROVIDER", "openai")
+base_url = os.getenv("BASE_URL", "https://api.deepseek.com/v1")
+
+model = init_chat_model(
+    model_name,
+    model_provider=model_provider,
+    api_key=api_key,
+    base_url=base_url,
+)
 
 
 # ---------- 状态 ----------

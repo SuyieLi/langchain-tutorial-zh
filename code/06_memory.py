@@ -3,6 +3,9 @@
 06 · 记忆与多轮对话 —— RunnableWithMessageHistory / trim_messages
 对应笔记: 06-记忆与多轮对话.md
 """
+import os
+
+from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
 from langchain_core.chat_history import InMemoryChatMessageHistory
 from langchain_core.output_parsers import StrOutputParser
@@ -10,7 +13,19 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain.messages import trim_messages
 
-model = init_chat_model("gpt-4o-mini", model_provider="openai")
+# 自动读取项目根目录的 .env（默认走 DeepSeek）
+load_dotenv()
+api_key = os.getenv("API_KEY", "")
+model_name = os.getenv("MODEL_NAME", "deepseek-chat")
+model_provider = os.getenv("MODEL_PROVIDER", "openai")
+base_url = os.getenv("BASE_URL", "https://api.deepseek.com/v1")
+
+model = init_chat_model(
+    model_name,
+    model_provider=model_provider,
+    api_key=api_key,
+    base_url=base_url,
+)
 
 # 会话存储: session_id -> 历史对象
 store = {}

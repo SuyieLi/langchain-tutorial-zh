@@ -6,6 +6,8 @@ langchain-openai>=1.0.0
 langchain-ollama          # 本地免 Key 模型（Ollama）
 langchain-community
 langchain-chroma
+langchain-huggingface    # 本地免 Key embedding（RAG 篇用，替代 OpenAI embedding）
+sentence-transformers    # HuggingFaceEmbeddings 的运行时依赖（会拉取 CPU 版 torch）
 langchain-text-splitters
 langgraph>=1.0.0
 langsmith

@@ -3,13 +3,28 @@
 09 · Agent 智能体 —— create_agent、轨迹观察、结构化输出
 对应笔记: 09-Agent智能体.md
 """
+import os
+
+from dotenv import load_dotenv
 from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy
 from langchain.chat_models import init_chat_model
 from langchain.tools import tool
 from pydantic import BaseModel, Field
 
-model = init_chat_model("gpt-4o-mini", model_provider="openai")
+# 自动读取项目根目录的 .env（默认走 DeepSeek）
+load_dotenv()
+api_key = os.getenv("API_KEY", "")
+model_name = os.getenv("MODEL_NAME", "deepseek-chat")
+model_provider = os.getenv("MODEL_PROVIDER", "openai")
+base_url = os.getenv("BASE_URL", "https://api.deepseek.com/v1")
+
+model = init_chat_model(
+    model_name,
+    model_provider=model_provider,
+    api_key=api_key,
+    base_url=base_url,
+)
 
 
 # ---------- 工具 ----------

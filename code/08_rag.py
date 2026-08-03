@@ -5,26 +5,43 @@
 
 运行准备:
   1. 在 code/data/ 下放几个 .txt/.md 知识文件（或修改下面的路径）
-  2. 需要配置 embedding 的 API Key（OPENAI_API_KEY 即可，text-embedding-3-small）
+  2. embedding 默认用本地 HuggingFace 模型（BAAI/bge-small-zh-v1.5），首次运行自动下载，免 API Key
+     可通过 .env 的 EMBEDDING_MODEL 切换其它 sentence-transformers 模型
   3. 首次运行会向量化入库；之后复用 chroma_db 目录
 """
 import os
 
+from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
-from langchain.embeddings import init_embeddings
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 from langchain_chroma import Chroma
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+# 自动读取项目根目录的 .env（默认走 DeepSeek）
+load_dotenv()
+api_key = os.getenv("API_KEY", "")
+model_name = os.getenv("MODEL_NAME", "deepseek-chat")
+model_provider = os.getenv("MODEL_PROVIDER", "openai")
+base_url = os.getenv("BASE_URL", "https://api.deepseek.com/v1")
 
 # ---------- 配置 ----------
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 DB_DIR = os.path.join(os.path.dirname(__file__), "chroma_db")
-EMBEDDING_MODEL = "openai:text-embedding-3-small"
 
-model = init_chat_model("gpt-4o-mini", model_provider="openai")
-embeddings = init_embeddings(EMBEDDING_MODEL)
+model = init_chat_model(
+    model_name,
+    model_provider=model_provider,
+    api_key=api_key,
+    base_url=base_url,
+)
+
+# DeepSeek 不提供 embedding 接口，这里改用本地 HuggingFace embedding（免费、离线、免 Key）
+# 首次运行会自动下载模型到本地缓存（约 95MB），之后离线复用。
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5")
+embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
 
 # 准备示例知识文件（如不存在则创建）
 os.makedirs(DATA_DIR, exist_ok=True)

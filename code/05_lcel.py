@@ -4,7 +4,9 @@
 对应笔记: 05-LCEL表达式语言.md
 """
 import asyncio
+import os
 
+from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
@@ -15,7 +17,19 @@ from langchain_core.runnables import (
     RunnablePassthrough,
 )
 
-model = init_chat_model("gpt-4o-mini", model_provider="openai")
+# 自动读取项目根目录的 .env（默认走 DeepSeek）
+load_dotenv()
+api_key = os.getenv("API_KEY", "")
+model_name = os.getenv("MODEL_NAME", "deepseek-chat")
+model_provider = os.getenv("MODEL_PROVIDER", "openai")
+base_url = os.getenv("BASE_URL", "https://api.deepseek.com/v1")
+
+model = init_chat_model(
+    model_name,
+    model_provider=model_provider,
+    api_key=api_key,
+    base_url=base_url,
+)
 
 translate_prompt = ChatPromptTemplate.from_messages([
     ("system", "你是专业翻译，把{target}翻译得地道自然。"),
@@ -54,11 +68,19 @@ def part1_basic_chain():
 def part2_runnable_lambda():
     """RunnableLambda: 普通函数接入管道"""
     print("\n=== Part 2 · RunnableLambda ===")
-    def add_header(text: str) -> str:
-        return f"[翻译任务] {text}"
+
+    # 入参是字典，取出input字段
+    def add_header(data: dict) -> dict:
+        raw_text = data["input"]
+        processed_text = f"[翻译任务] {raw_text}"
+        # 返回 translate_chain 需要的字典格式！
+        return {
+            "target": "英语",
+            "text": processed_text
+        }
 
     chain = RunnableLambda(add_header) | translate_chain
-    print(chain.invoke("你好，世界"))
+    print(chain.invoke({"input": "你好，世界"}))
 
 
 def part3_parallel():
@@ -85,15 +107,23 @@ def part4_branch():
     coding_chain = coding_prompt | model | StrOutputParser()
     cooking_chain = cooking_prompt | model | StrOutputParser()
 
+    # 适配器：统一输入格式，适配 translate_chain
+    translate_adapter = RunnableLambda(lambda x: {
+        "target": "中文",
+        "text": x["question"]
+    })
+    wrapped_translate_chain = translate_adapter | translate_chain
+
     branch = RunnableBranch(
         (lambda x: "代码" in x["question"] or "python" in x["question"].lower(), coding_chain),
         (lambda x: "菜" in x["question"] or "吃" in x["question"], cooking_chain),
-        translate_chain,  # 兜底
+        wrapped_translate_chain,  # 使用包装后的链
     )
 
     print("代码问题 →", branch.invoke({"question": "python 的装饰器是什么？"})[:60])
     print("美食问题 →", branch.invoke({"question": "红烧肉怎么做？"})[:60])
-
+    # 测试兜底分支，触发翻译链
+    print("兜底翻译 →", branch.invoke({"question": "今天天气很好"}))
 
 def part5_passthrough():
     """RunnablePassthrough: 原样透传 + assign"""
