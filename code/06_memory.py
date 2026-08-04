@@ -27,6 +27,21 @@ model = init_chat_model(
     base_url=base_url,
 )
 
+
+def _count_tokens(messages) -> int:
+    """简易 token 计数器（按字符数近似估算）。
+
+    DeepSeek 等非官方 OpenAI 模型名无法使用 model.get_num_tokens_from_messages()
+    （会抛 NotImplementedError），这里用字符数近似替代，足以演示 trim_messages
+    的裁剪逻辑。生产环境若需精确计数，可换用 tiktoken 或模型自带的 tokenizer。
+    """
+    total = 0
+    for m in messages:
+        content = m.content if hasattr(m, "content") else m.get("content", "")
+        total += len(str(content))
+    return total
+
+
 # 会话存储: session_id -> 历史对象
 store = {}
 
@@ -52,7 +67,7 @@ def build_chain(with_trimmer: bool = False):
         trimmer = trim_messages(
             max_tokens=200,
             strategy="last",
-            token_counter=model,
+            token_counter=_count_tokens,
             include_system=True,
             allow_partial=False,
         )
@@ -97,7 +112,7 @@ def demo_trim():
     trimmer = trim_messages(
         max_tokens=200,
         strategy="last",
-        token_counter=model,
+        token_counter=_count_tokens,
         include_system=True,
     )
     fake_messages = [

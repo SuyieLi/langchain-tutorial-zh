@@ -4,3 +4,5 @@
 .env
 .env.local
 .idea/
+.code/__pycache__/
+.code/chroma_db/
