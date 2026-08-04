@@ -1,6 +1,7 @@
 # 08 · RAG 检索增强生成
 
 > 给模型装上"外接大脑"：从文档加载到向量检索的完整 RAG 流水线。
+> 对应代码：`code/08_rag.py`（含本地 HuggingFace embedding 替代 OpenAI）。
 > 上一篇：[[07-工具与函数调用]] ｜ 下一篇：[[09-Agent智能体]]
 
 ---
@@ -39,17 +40,10 @@ RAG 问答：问题 → ①检索相关资料 → ②问题+资料 → 模型 �
 LangChain 有几百种文档加载器（`langchain_community.document_loaders`）：
 
 ```python
-from langchain_community.document_loaders import TextLoader, PyPDFLoader, WebBaseLoader
+from langchain_community.document_loaders import TextLoader
 
-# 纯文本
-docs = TextLoader("notes.txt").load()
-
-# PDF
-docs = PyPDFLoader("report.pdf").load()
-
-# 网页（注意：新版的网页加载器在 langchain 中）：
-# from langchain.document_loaders import WebBaseLoader
-# docs = WebBaseLoader("https://docs.langchain.com").load()
+# 纯文本（本项目示例用这个）
+docs = TextLoader("code/data/langchain_intro.md", encoding="utf-8").load()
 
 # 每个文档对象：page_content（正文）+ metadata（来源、页码等）
 print(docs[0].page_content[:200])
@@ -63,7 +57,6 @@ print(docs[0].metadata)
 | `WebBaseLoader` | 网页抓取 |
 | `CSVLoader` / `JSONLoader` | 表格/JSON |
 | `DirectoryLoader` | 批量加载目录 |
-| 各种数据库/平台加载器 | Notion、Confluence、S3… |
 
 > ⚠️ 用 `load()` 默认一次全部读进内存，大文档用 `lazy_load()` 迭代式读取。
 
@@ -77,9 +70,9 @@ print(docs[0].metadata)
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 splitter = RecursiveCharacterTextSplitter(
-    chunk_size=500,        # 每块目标字符数
-    chunk_overlap=50,      # 相邻块重叠字符数（保住上下文连贯）
-    separators=["\n\n", "\n", "。", "！", "？", " ", ""],  # 按优先级切
+    chunk_size=200,        # 每块目标字符数（本项目示例用 200）
+    chunk_overlap=30,      # 相邻块重叠字符数（保住上下文连贯）
+    separators=["\n\n", "\n", "。", " ", ""],  # 按优先级切
 )
 
 chunks = splitter.split_documents(docs)
@@ -97,7 +90,7 @@ print(len(chunks), chunks[0].page_content[:100])
 | **语义切分**（SemanticChunker，进阶） | 按语义边界切，更准但更慢 |
 
 > [!tip] 参数经验值
-> - `chunk_size` 500–1500 字符比较常见；
+> - `chunk_size` 500–1500 字符比较常见（示例用 200 便于观察）；
 > - `chunk_overlap` 设为 chunk 的 10–20%；
 > - 生产环境**用你真实的测试集调参**，别凭感觉（配合 [[11-生产实践与LangSmith]] 评估）。
 
@@ -105,20 +98,30 @@ print(len(chunks), chunks[0].page_content[:100])
 
 ## 4. 第三步：向量化 + 入库（Embed + Store）
 
-### 4.1 向量化
+### 4.1 ⚠️ DeepSeek 无 embedding，改用本地 HuggingFace
+
+> [!warning] 关键避坑
+> 本项目对话模型用 DeepSeek，但 **DeepSeek 不提供 embedding 接口**。
+> 原 OpenAI 写法 `init_embeddings("openai:text-embedding-3-small")` 跑不通（要么报错要么跳过）。
+> **解决办法**：改用**本地 HuggingFace embedding**（免 Key、离线、首次自动下载约 95MB）。
 
 ```python
-from langchain.embeddings import init_embeddings
+from langchain_huggingface import HuggingFaceEmbeddings
+import os
 
-embeddings = init_embeddings("openai:text-embedding-3-small")
-# 中文场景也常用：text2vec / bge-m3（本地免费）等
+# 默认用中文友好的小模型 BAAI/bge-small-zh-v1.5（约 95MB，首次下载后离线复用）
+# 可通过 .env 的 EMBEDDING_MODEL 切换其它 sentence-transformers 模型
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5")
+embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
 ```
+
+> 对应代码：`code/08_rag.py` 第 41-44 行。
+> 依赖：`langchain-huggingface` + `sentence-transformers` + `torch`（CPU 版），见 `code/requirements.txt`。
 
 ### 4.2 向量库（Vector Store）
 
 ```python
-from langchain_chroma import Chroma        # 轻量，本地文件存储，学习首选
-# 其他：FAISS（内存）、Qdrant、Pinecone、Milvus（生产）、PGVector（Postgres）...
+from langchain_chroma import Chroma
 
 # 建库入库：一次把文档向量化并存入
 vector_store = Chroma.from_documents(
@@ -130,6 +133,8 @@ vector_store = Chroma.from_documents(
 # 之后重启用 load 恢复（不用重新向量化）
 # vector_store = Chroma(persist_directory="./chroma_db", embedding=embeddings)
 ```
+
+> 对应代码：`code/08_rag.py` 的 `build_vector_store()` / `load_or_build_store()`。
 
 | 向量库 | 特点 | 场景 |
 |--------|------|------|
@@ -146,10 +151,10 @@ vector_store = Chroma.from_documents(
 # 直接检索（相似度 TopK）
 retriever = vector_store.as_retriever(
     search_type="similarity",      # 相似度检索
-    search_kwargs={"k": 4},        # 返回 4 块
+    search_kwargs={"k": 3},        # 返回 3 块（本项目示例）
 )
 
-docs = retriever.invoke("LangChain 支持哪些向量库？")
+docs = retriever.invoke("LangChain 的核心组件有哪些？")
 for d in docs:
     print("—", d.page_content[:80])
 ```
@@ -173,68 +178,47 @@ for d in docs:
 ```python
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnablePassthrough
+from langchain_core.runnables import RunnableLambda, RunnablePassthrough
+
+def format_docs(docs):
+    return "\n\n".join(doc.page_content for doc in docs)
 
 prompt = ChatPromptTemplate.from_messages([
-    ("system", "你是知识库问答助手。只能依据以下资料回答，资料不足时回答'资料中没有相关信息'。"
-               "\n\n资料：\n{context}"),
+    ("system", "你是知识库问答助手。只能依据以下资料回答，"
+               "资料不足时回答'资料中没有相关信息'。\n\n资料：\n{context}"),
     ("human", "问题：{question}"),
 ])
 
 # 经典 RAG 链（LCEL 并行：检索 + 透传问题）
 rag_chain = (
-    {"context": retriever, "question": RunnablePassthrough()}
+    {"context": retriever | RunnableLambda(format_docs), "question": RunnablePassthrough()}
     | prompt
     | model
     | StrOutputParser()
 )
 
-answer = rag_chain.invoke("LangChain 支持哪些向量库？")
-print(answer)
+# 测试 1: 资料里有的问题
+print(rag_chain.invoke("LangChain 的核心组件有哪些？"))
+
+# 测试 2: 资料里没有的问题（验证不胡说）
+print(rag_chain.invoke("2026年世界杯冠军是谁？"))  # → 资料中没有相关信息
 ```
 
-**注意 `{"context": retriever, "question": RunnablePassthrough()}` 的妙处**：
-- `retriever` 并行执行检索 → 得到 docs 列表；
+> 对应代码：`code/08_rag.py` 的 `main()`，含两个测试用例（一个资料内有、一个资料外）。
+
+**注意 `{"context": retriever | format_docs, "question": RunnablePassthrough()}` 的妙处**：
+- `retriever | format_docs` 并行执行检索并格式化为字符串；
 - `RunnablePassthrough()` 原样透传用户问题；
-- 两者自动合并为 `{"context": [...docs], "question": "..."}` 喂给 prompt。
+- 两者自动合并为 `{"context": "...", "question": "..."}` 喂给 prompt。
 
 ---
 
-## 7. 让答案"可溯源"：返回引用
-
-生产环境必须让用户看到答案来自哪里：
-
-```python
-from langchain_core.runnables import RunnableParallel
-
-def format_docs(docs):
-    return "\n\n".join(doc.page_content for doc in docs)
-
-rag_chain = (
-    RunnableParallel(
-        context=retriever | RunnableLambda(format_docs),   # 格式化资料
-        question=RunnablePassthrough(),
-    )
-    | prompt
-    | model
-    | StrOutputParser()
-)
-
-# 想同时返回资料来源？把检索和生成做成两个输出
-chain_with_sources = RunnableParallel(
-    answer=rag_chain,                      # 生成答案
-    sources=lambda x: [d.metadata for d in retriever.invoke(x["question"])],  # 来源
-)
-```
-
----
-
-## 8. RAG 进阶话题（了解目录）
+## 7. RAG 进阶话题（了解目录）
 
 | 主题 | 一句话说明 | 学习路径 |
 |------|-----------|----------|
 | 混合检索 | 向量 + 关键词（BM25）互补 | 检索质量优化 |
-| 重排序（Rerank） | 检索后让模型/模型再排序 | 检索质量优化 |
+| 重排序（Rerank） | 检索后让模型再排序 | 检索质量优化 |
 | 查询改写 | 把问题改写成更适合检索的形式 | 检索质量优化 |
 | 多路召回 | 多种检索方式结果合并 | 检索质量优化 |
 | **Agentic RAG** | Agent 自主决定检索什么、检索几次 | 结合 [[09-Agent智能体]] |
@@ -249,14 +233,14 @@ chain_with_sources = RunnableParallel(
 
 ## ✅ 动手练习
 
-1. 准备 1–2 个你自己的文本文件（如笔记/论文），完整跑一遍五步 RAG 流水线；
+1. 准备 1–2 个你自己的文本文件，完整跑一遍五步 RAG 流水线（`python code/08_rag.py`）；
 2. 问一个"资料里明明有"的问题，验证回答正确；再问"资料里没有"的，验证模型不说谎；
 3. 修改 chunk_size（200 vs 1000），对比检索效果差异，记录观察；
 4. 把检索方式换成 `mmr`，对比结果多样性；
-5. （进阶）实现"返回引用来源"的版本，打印答案对应的文档出处。
+5. （进阶）通过 `.env` 的 `EMBEDDING_MODEL` 换一个更大的 embedding 模型，对比检索效果。
 
 ---
 
-🏷️ `#LangChain` `#RAG` `#向量检索` `#Embedding`
+🏷️ `#LangChain` `#RAG` `#向量检索` `#Embedding` `#DeepSeek` `#避坑`
 
 [[README|← 返回学习路径总览]] ｜ [[09-Agent智能体|下一篇：Agent →]]

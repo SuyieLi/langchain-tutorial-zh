@@ -1,6 +1,7 @@
 # 05 · LCEL 表达式语言
 
 > LangChain 的灵魂：用 `|` 把组件串成管道，组合式编程构建复杂应用。
+> 对应代码：`code/05_lcel.py`（5 个 part）。
 > 上一篇：[[04-输出解析与结构化输出]] ｜ 下一篇：[[06-记忆与多轮对话]]
 
 ---
@@ -18,12 +19,12 @@ chain = prompt | model | StrOutputParser()
 
 **为什么它如此重要？**
 
-| 传统写法（❌）             | LCEL（✅）             |
-| ------------------- | ------------------- |
-| 手动调用每个组件，if/else 处理 | 一行声明管道              |
-| 同步/异步/流式/批量要分别写     | 四种调用方式**自动全部支持**    |
-| 中间步骤难观察             | 天然可追踪（配合 LangSmith） |
-| 组件难复用               | 每个链本身也是组件，可嵌套组合     |
+| 传统写法（❌） | LCEL（✅） |
+|----------------|-------------|
+| 手动调用每个组件，if/else 处理 | 一行声明管道 |
+| 同步/异步/流式/批量要分别写 | 四种调用方式**自动全部支持** |
+| 中间步骤难观察 | 天然可追踪（配合 LangSmith） |
+| 组件难复用 | 每个链本身也是组件，可嵌套组合 |
 
 > [!note] 官方原话
 > LCEL 的三大承诺：**先发制人的并行**、**自动重试与回退**、**对异步/流式/批量的第一等支持**。
@@ -50,26 +51,31 @@ abatch()     异步批量
 ```python
 from langchain_core.runnables import RunnableLambda
 
-def add_header(text: str) -> str:
-    return f"[翻译任务] {text}"
+# 入参是字典，取出 input 字段，返回下游链需要的格式
+def add_header(data: dict) -> dict:
+    raw_text = data["input"]
+    return {"target": "英语", "text": f"[翻译任务] {raw_text}"}
 
-chain = RunnableLambda(add_header) | model | StrOutputParser()
+chain = RunnableLambda(add_header) | translate_chain
 # 普通函数 → Runnable，混入管道
 ```
 
-### 2.2 RunnablePassthrough：原样透传（RAG 里很常用）
+> 对应代码：`code/05_lcel.py` 的 `part2_runnable_lambda()`。
+
+### 2.2 RunnablePassthrough：原样透传 + assign（RAG 里很常用）
 
 ```python
-from langchain_core.runnables import RunnablePassthrough
+from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 
 # 透传 = 什么都不改，只是"经过"——常用于同时保留多个变量
 chain = (
-    {"question": RunnablePassthrough()}     # 问题原样传入
-    | RunnableLambda(print_debug)           # 可以打印调试
+    {"question": RunnablePassthrough(), "note": RunnableLambda(lambda x: "已记录")}
+    | RunnableLambda(lambda d: f"问题: {d['question']} | {d['note']}")
 )
 ```
 
-> 在 [[08-RAG检索增强生成]] 中，`RunnablePassthrough.assign()` 用来"一边检索文档、一边保留用户问题"。
+> 对应代码：`code/05_lcel.py` 的 `part5_passthrough()`。
+> 在 [[08-RAG检索增强生成]] 中，`RunnablePassthrough` 用来"一边检索文档、一边保留用户问题"。
 
 ---
 
@@ -113,18 +119,26 @@ chain = (
 ## 4. 实战组合：一个完整的翻译链
 
 ```python
+# code/05_lcel.py（默认走 DeepSeek，配置从 .env 读取）
+from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
+import os
 
-model = init_chat_model("gpt-4o-mini")
+load_dotenv()
+model = init_chat_model(
+    os.getenv("MODEL_NAME", "deepseek-chat"),
+    model_provider=os.getenv("MODEL_PROVIDER", "openai"),
+    api_key=os.getenv("API_KEY", ""),
+    base_url=os.getenv("BASE_URL", "https://api.deepseek.com/v1"),
+)
 
-prompt = ChatPromptTemplate.from_messages([
+translate_prompt = ChatPromptTemplate.from_messages([
     ("system", "你是专业翻译，把{target}翻译得地道自然。"),
     ("human", "{text}"),
 ])
-
-chain = prompt | model | StrOutputParser()
+chain = translate_prompt | model | StrOutputParser()
 
 # 单次
 print(chain.invoke({"target": "英语", "text": "机器学习改变了世界"}))
@@ -147,6 +161,8 @@ async def main():
 asyncio.run(main())
 ```
 
+> 对应代码：`code/05_lcel.py` 的 `part1_basic_chain()`。
+
 **同一个 chain，四种调用方式零修改。** 这就是 LCEL 的威力。
 
 ---
@@ -158,25 +174,43 @@ asyncio.run(main())
 ```python
 from langchain_core.runnables import RunnableParallel
 
-chain1 = prompt_a | model | StrOutputParser()   # 写摘要
-chain2 = prompt_b | model | StrOutputParser()   # 提取关键词
+summary_prompt = ChatPromptTemplate.from_messages([("human", "用一句话总结：{doc}")])
+keyword_prompt = ChatPromptTemplate.from_messages([("human", "提取3个关键词：{doc}")])
+
+chain1 = summary_prompt | model | StrOutputParser()   # 写摘要
+chain2 = keyword_prompt | model | StrOutputParser()   # 提取关键词
 
 parallel = RunnableParallel(summary=chain1, keywords=chain2)
-result = parallel.invoke({"doc": "..."})
+result = parallel.invoke({"doc": "LangChain 是一个用于构建大语言模型应用的开发框架..."})
 # {"summary": "...", "keywords": "..."}  ← 两条链并行跑
 ```
 
-### 5.2 条件路由：`RunnableBranch`（或 Dict 路由）
+> 对应代码：`code/05_lcel.py` 的 `part3_parallel()`。
+
+### 5.2 条件路由：`RunnableBranch`
 
 ```python
-from langchain_core.runnables import RunnableBranch
+from langchain_core.runnables import RunnableBranch, RunnableLambda
+
+coding_chain = coding_prompt | model | StrOutputParser()
+cooking_chain = cooking_prompt | model | StrOutputParser()
+
+# 适配器：统一输入格式，适配 translate_chain
+translate_adapter = RunnableLambda(lambda x: {"target": "中文", "text": x["question"]})
+wrapped_translate = translate_adapter | translate_chain
 
 branch = RunnableBranch(
-    (lambda x: "代码" in x["question"], coding_chain),   # 条件1 → 链1
-    (lambda x: "翻译" in x["question"], translate_chain),# 条件2 → 链2
-    default_chain,                                        # 兜底
+    (lambda x: "代码" in x["question"] or "python" in x["question"].lower(), coding_chain),
+    (lambda x: "菜" in x["question"] or "吃" in x["question"], cooking_chain),
+    wrapped_translate,   # 兜底：走翻译链
 )
+
+branch.invoke({"question": "python 的装饰器是什么？"})  # → coding_chain
+branch.invoke({"question": "红烧肉怎么做？"})           # → cooking_chain
+branch.invoke({"question": "今天天气很好"})             # → 兜底翻译
 ```
+
+> 对应代码：`code/05_lcel.py` 的 `part4_branch()`。
 
 > [!tip] 路由的另一选择
 > 也可以让**模型自己决定**走哪条路（RouterPrompt / 工具调用实现），
@@ -218,7 +252,7 @@ export LANGSMITH_TRACING=true
 export LANGSMITH_API_KEY=lsv2_xxx
 ```
 
-> 📖 详见 [[11-生产实践与LangSmith]]。
+> 📖 详见 [[11-生产实践与LangSmith]]。无 Key 时本项目提供了本地降级模式。
 
 ---
 
@@ -232,6 +266,6 @@ export LANGSMITH_API_KEY=lsv2_xxx
 
 ---
 
-🏷️ `#LangChain` `#LCEL` `#Runnable` `#管道`
+🏷️ `#LangChain` `#LCEL` `#Runnable` `#管道` `#DeepSeek`
 
 [[README|← 返回学习路径总览]] ｜ [[06-记忆与多轮对话|下一篇：记忆 →]]

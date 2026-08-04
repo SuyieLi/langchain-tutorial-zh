@@ -49,36 +49,49 @@
 
 ## 3. 第一个 LangGraph 应用（5 分钟上手）
 
+> 📂 对应代码：`code/10_langgraph_workflow.py` → `part1_basic()`
+
 ```python
 from typing import TypedDict
+from dotenv import load_dotenv
 from langgraph.graph import StateGraph, START, END
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage, SystemMessage
+import os
 
-model = init_chat_model("gpt-4o-mini")
+# 初始化模型（统一走 .env，默认 DeepSeek）
+load_dotenv()
+model = init_chat_model(
+    os.getenv("MODEL_NAME", "deepseek-chat"),
+    model_provider=os.getenv("MODEL_PROVIDER", "openai"),
+    api_key=os.getenv("API_KEY", ""),
+    base_url=os.getenv("BASE_URL", "https://api.deepseek.com/v1"),
+)
 
 # ① 定义状态：图里流动的数据
 class State(TypedDict):
     messages: list          # 消息列表（贯穿全程）
-    sentiment: str          # 自定义字段
+    sentiment: str          # 自定义字段：情感标签
+    reply_style: str        # 自定义字段：回复风格
 
 # ② 节点：普通 Python 函数（读 state → 返回更新）
 def analyze_sentiment(state: State) -> State:
     """节点1：情感分析"""
     resp = model.invoke([
-        SystemMessage("判断用户情绪：positive / negative / neutral，只输出一个词"),
+        SystemMessage("判断用户情绪，只输出一个词：positive / negative / neutral"),
         HumanMessage(state["messages"][-1].content),
     ])
     return {"sentiment": resp.content.strip()}   # 只返回要更新的字段
 
 def generate_reply(state: State) -> State:
     """节点2：生成回复（根据情感定制风格）"""
-    style = {"positive": "热情", "negative": "安慰", "neutral": "客观"}[state["sentiment"]]
+    style = {"positive": "热情活泼", "negative": "温柔安慰", "neutral": "客观专业"}
+    chosen = style.get(state["sentiment"], "客观专业")
     resp = model.invoke([
-        SystemMessage(f"用{style}的语气回复用户"),
+        SystemMessage(f"用{chosen}的语气回复用户，不超过2句话"),
         HumanMessage(state["messages"][-1].content),
     ])
-    return {"messages": [resp]}                  # 追加回复到消息列表
+    return {"messages": [resp], "reply_style": chosen}   # 追加回复 + 记录风格
 
 # ③ 建图：节点 + 边
 graph = StateGraph(State)
@@ -104,30 +117,46 @@ print(result["messages"][-1].content)  # 热情回复
 
 ## 4. 条件边：让流程"智能分叉"
 
+> 📂 对应代码：`code/10_langgraph_workflow.py` → `route_by_sentiment()` + `build_graph()`
+
 ```python
-from langgraph.graph import StateGraph, START, END
+def comfort_reply(state: State) -> State:
+    """负面情绪专用回复节点"""
+    resp = model.invoke([
+        SystemMessage("用户心情不好，请温暖地安慰TA，并给一个实用小建议，不超过2句话"),
+        HumanMessage(state["messages"][-1].content),
+    ])
+    return {"messages": [resp], "reply_style": "comfort"}
 
 def route_by_sentiment(state: State) -> str:
     """根据情感决定走哪条路（返回目标节点名）"""
     if state["sentiment"] == "negative":
         return "comfort"          # 负面 → 安慰节点
-    return "normal_reply"         # 其他 → 普通回复
+    return "normal"               # 其他 → 普通回复
 
 graph = StateGraph(State)
 graph.add_node("analyze", analyze_sentiment)
-graph.add_node("comfort", comfort_node)        # 安慰
-graph.add_node("normal_reply", normal_node)    # 普通回复
+graph.add_node("reply", generate_reply)        # 普通回复
+graph.add_node("comfort", comfort_reply)       # 安慰回复
 graph.add_edge(START, "analyze")
 graph.add_conditional_edges(
     "analyze",
-    route_by_sentiment,                        # 路由函数
-    {"comfort": "comfort", "normal_reply": "normal_reply"},  # 返回名 → 节点
+    route_by_sentiment,                         # 路由函数
+    {"comfort": "comfort", "normal": "reply"},  # 返回值 → 目标节点名
 )
+graph.add_edge("reply", END)
 graph.add_edge("comfort", END)
-graph.add_edge("normal_reply", END)
+
+app = graph.compile()
 ```
 
+> [!note] `add_conditional_edges` 第三个参数
+> 它是 `{路由函数返回值: 目标节点名}` 的映射表。路由函数返回 `"normal"`，映射表把它导向 `"reply"` 节点。
+> 这个映射表不是必需的（不传时返回值就被当作节点名），但显式写出更清晰、更安全。
+
 **条件边 = 让流程拥有 if/else 的能力**。路由函数可以很简单（读字段），也可以让模型来决定（LLM 路由）。
+
+代码 `part1_basic()` 跑了两个场景验证分叉：正面情绪走 `reply`，负面情绪走 `comfort`。
 
 ---
 
@@ -149,13 +178,15 @@ graph.add_edge("tools", "agent")    # 工具执行完回到 agent（形成环）
 
 > [!note] 与旧版区别
 > 1.0 起，`create_react_agent`（langgraph.prebuilt）已废弃，迁移到 `create_agent`（langchain.agents）。
-> 但 LangGraph 的底层 API（StateGraph / Node / Edge）不变，学一次永久受用。
+> 但 LangGraph 的底层 API（StateGraph / Node / Edge）不变，学一次永久受用。迁移对照见 [[12-常见问题与避坑指南]]。
 
 ---
 
 ## 6. 持久化与断点（生产级能力）
 
 ### 6.1 Checkpointer：自动存档 + 断点续跑
+
+> 📂 对应代码：`code/10_langgraph_workflow.py` → `part2_checkpoint()`
 
 ```python
 from langgraph.checkpoint.memory import InMemorySaver
@@ -165,35 +196,47 @@ app = graph.compile(checkpointer=checkpointer)
 
 # 每次调用带 thread_id（会话标识），状态自动持久化
 config = {"configurable": {"thread_id": "thread-1"}}
-app.invoke({"messages": [HumanMessage("第一步")]}, config)
+app.invoke({"messages": [HumanMessage("第一步：告诉我今天的任务")]}, config)
 
-# 服务器重启后，仍可用同一 thread_id 恢复上下文
-app.invoke({"messages": [HumanMessage("第二步")]}, config)
+# 同一 thread_id 再次调用，状态延续——模型"记得"上一轮
+app.invoke({"messages": [HumanMessage("第二步：总结一下刚才的任务")]}, config)
 ```
 
 > 这是 LangGraph 1.0 主打的 **Durable State（持久状态）**：进程崩溃、重启都不丢上下文。
+> 代码里 `InMemorySaver` 只在内存中保持（进程退出即丢失），生产环境需换成持久化存储。
 
 ### 6.2 Human-in-the-loop：人工审批
 
+> 📂 对应代码：`code/10_langgraph_workflow.py` → `part3_hitl()`
+
 ```python
 # ① 在敏感节点前打断：compile 时指定
-app = graph.compile(checkpointer=checkpointer, interrupt_before=["send_email"])
+app = graph.compile(
+    checkpointer=InMemorySaver(),
+    interrupt_before=["reply", "comfort"],   # 到这些节点前暂停
+)
 
-# ② 第一次运行：会在 send_email 前暂停
-result = app.invoke(initial_input, config)
-print("已暂停，等待人工确认...")
+config = {"configurable": {"thread_id": "thread-h1"}}
 
-# ③ 人工确认后：继续执行
-app.invoke(None, config)   # 从断点继续
+# ② 第一次运行：会在 reply/comfort 前暂停
+result = app.invoke({"messages": [HumanMessage("我想吐槽一下今天遇到的bug")]}, config)
+print("⏸ 已暂停，等待人工确认...")
+print(f"  当前情感: {result['sentiment']}")
+print(f"  检查点下一步: {list(app.get_state(config).next)}")
+
+# ③ 人工确认后：传 None 继续（从断点接着跑）
+final = app.invoke(None, config)
+print(f"最终回复: {final['messages'][-1].content}")
 ```
 
 | 人机协同模式 | 用途 |
 |--------------|------|
 | `interrupt_before` | 关键动作前暂停等审批 |
-| 修改状态后继续 | 人工修改 AI 生成的方案再执行 |
+| 修改状态后继续 | 人工修改 AI 生成的方案再执行（`app.update_state(...)`） |
 | 审核 Agent | 审核通过才放行 |
 
 > 高危场景（发邮件、转账、发布）**必须**加人工审批——这是生产底线。
+> 代码 `build_graph()` 通过 `interrupt_before` 参数统一控制是否启用 HITL，无参时走普通流程。
 
 ---
 
@@ -237,10 +280,10 @@ graph.add_conditional_edges("supervisor", route_to_agent, AGENT_MAP)
 
 ## ✅ 动手练习
 
-1. 搭一个"翻译 → 检测语言 → 按语言调整风格"的三节点图；
-2. 给图加一个条件边：当检测到负面情绪时走安慰分支；
-3. 用 InMemorySaver 做 checkpointer，分两次调用验证状态保持；
-4. 用 `interrupt_before` 实现"人工确认后才输出最终结果"；
+1. 运行 `code/10_langgraph_workflow.py`，跑 `part1` 验证正面/负面两个分支的走向；
+2. 给图加一个新条件：当检测到 `neutral` 时走"简洁回复"分支；
+3. 跑 `part2`，用 `InMemorySaver` 做 checkpointer，分两次调用验证状态保持；
+4. 跑 `part3`，用 `interrupt_before` 实现"人工确认后才输出最终结果"，观察 `get_state` 的变化；
 5. （进阶）模仿 Supervisor 模式，构建"研究员+写手"双 Agent 协作图。
 
 ---
